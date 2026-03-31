@@ -28,9 +28,6 @@ def check_password():
 if not check_password():
     st.stop()
 
-# ══════════════════════════════════════════════════════════════════════════════
-# ETL — same logic as your processing notebook, now embedded in the app
-# ══════════════════════════════════════════════════════════════════════════════
 COLUMN_NAMES = [
     "Fecha", "TipoTransferencia", "Transferencia",
     "TipoPersona_Ordenante", "TipoID_Ordenante", "NoOrdenCedula_Ordenante",
@@ -269,7 +266,7 @@ def compute_anomalies(series_df, z_thresh, iqr_mult):
 # ══════════════════════════════════════════════════════════════════════════════
 # TABS
 # ══════════════════════════════════════════════════════════════════════════════
-tab1, tab2 = st.tabs(["RESUMEN", "CORRELACIONES"])
+tab1, tab2, tab3 = st.tabs(["RESUMEN", "CORRELACIONES", "MAPA"])
 
 # ── TAB 1: RESUMEN ────────────────────────────────────────────────────────────
 with tab1:
@@ -587,3 +584,207 @@ with tab2:
     buffer2.seek(0)
     st.download_button("Descargar datos de correlación (Excel)", buffer2, "correlaciones.xlsx",
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    
+# ── TAB 3: MAPA ───────────────────────────────────────────────────────────────
+with tab3:
+    st.markdown("### Distribución Geográfica por País")
+    st.caption(
+        "El mapa utiliza el campo **País** del archivo TF-21. "
+        "Si los códigos son de 2 letras (ISO 3166-1 alpha-2) se convierten automáticamente; "
+        "si son de 3 letras (alpha-3) se usan directamente."
+    )
+
+    # ── Period filter ────────────────────────────────────────────────────────
+    available_periods_m = sorted(df_filtered_secondary["Año_Mes"].unique())
+    if len(available_periods_m) == 0:
+        st.warning("No hay datos disponibles con los filtros actuales.")
+        st.stop()
+
+    map_mode = st.radio(
+        "Alcance temporal:",
+        ["Todos los períodos cargados", "Rango de períodos"],
+        horizontal=True,
+        key="map_mode",
+    )
+
+    if map_mode == "Rango de períodos" and len(available_periods_m) >= 2:
+        m_start, m_end = st.select_slider(
+            "Seleccione el rango:",
+            options=available_periods_m,
+            value=(available_periods_m[0], available_periods_m[-1]),
+            key="map_range",
+        )
+        selected_periods_m = available_periods_m[
+            available_periods_m.index(m_start): available_periods_m.index(m_end) + 1
+        ]
+        df_map = df_filtered_secondary[
+            df_filtered_secondary["Año_Mes"].isin(selected_periods_m)
+        ]
+        period_label = f"{m_start} → {m_end}"
+    else:
+        df_map = df_filtered_secondary.copy()
+        period_label = "Todos los períodos"
+
+    # ── Metric selector ──────────────────────────────────────────────────────
+    map_metric = st.radio(
+        "Métrica a visualizar:",
+        ["Monto Total", "N° Transacciones", "Monto Promedio / Tx"],
+        horizontal=True,
+        key="map_metric",
+    )
+
+    # ── Aggregate by country ─────────────────────────────────────────────────
+    country_agg = (
+        df_map.groupby("País")
+        .agg(
+            Monto=("Monto en Moneda Original", "sum"),
+            Volumen=("Monto en Moneda Original", "count"),
+        )
+        .reset_index()
+    )
+    country_agg["Monto"]    = country_agg["Monto"] / 100
+    country_agg["Promedio"] = country_agg["Monto"] / country_agg["Volumen"]
+    country_agg = country_agg[country_agg["País"].notna() & (country_agg["País"].str.strip() != "")]
+
+    if country_agg.empty:
+        st.warning("No hay datos de País para mostrar en el mapa.")
+        st.stop()
+
+    # ── ISO-2 → ISO-3 conversion (Plotly needs alpha-3 for choropleth) ───────
+    ISO2_TO_ISO3 = {
+        "AF":"AFG","AL":"ALB","DZ":"DZA","AD":"AND","AO":"AGO","AG":"ATG","AR":"ARG",
+        "AM":"ARM","AU":"AUS","AT":"AUT","AZ":"AZE","BS":"BHS","BH":"BHR","BD":"BGD",
+        "BB":"BRB","BY":"BLR","BE":"BEL","BZ":"BLZ","BJ":"BEN","BT":"BTN","BO":"BOL",
+        "BA":"BIH","BW":"BWA","BR":"BRA","BN":"BRN","BG":"BGR","BF":"BFA","BI":"BDI",
+        "CV":"CPV","KH":"KHM","CM":"CMR","CA":"CAN","CF":"CAF","TD":"TCD","CL":"CHL",
+        "CN":"CHN","CO":"COL","KM":"COM","CG":"COG","CD":"COD","CR":"CRI","CI":"CIV",
+        "HR":"HRV","CU":"CUB","CY":"CYP","CZ":"CZE","DK":"DNK","DJ":"DJI","DM":"DMA",
+        "DO":"DOM","EC":"ECU","EG":"EGY","SV":"SLV","GQ":"GNQ","ER":"ERI","EE":"EST",
+        "SZ":"SWZ","ET":"ETH","FJ":"FJI","FI":"FIN","FR":"FRA","GA":"GAB","GM":"GMB",
+        "GE":"GEO","DE":"DEU","GH":"GHA","GR":"GRC","GD":"GRD","GT":"GTM","GN":"GIN",
+        "GW":"GNB","GY":"GUY","HT":"HTI","HN":"HND","HU":"HUN","IS":"ISL","IN":"IND",
+        "ID":"IDN","IR":"IRN","IQ":"IRQ","IE":"IRL","IL":"ISR","IT":"ITA","JM":"JAM",
+        "JP":"JPN","JO":"JOR","KZ":"KAZ","KE":"KEN","KI":"KIR","KP":"PRK","KR":"KOR",
+        "KW":"KWT","KG":"KGZ","LA":"LAO","LV":"LVA","LB":"LBN","LS":"LSO","LR":"LBR",
+        "LY":"LBY","LI":"LIE","LT":"LTU","LU":"LUX","MG":"MDG","MW":"MWI","MY":"MYS",
+        "MV":"MDV","ML":"MLI","MT":"MLT","MH":"MHL","MR":"MRT","MU":"MUS","MX":"MEX",
+        "FM":"FSM","MD":"MDA","MC":"MCO","MN":"MNG","ME":"MNE","MA":"MAR","MZ":"MOZ",
+        "MM":"MMR","NA":"NAM","NR":"NRU","NP":"NPL","NL":"NLD","NZ":"NZL","NI":"NIC",
+        "NE":"NER","NG":"NGA","NO":"NOR","OM":"OMN","PK":"PAK","PW":"PLW","PA":"PAN",
+        "PG":"PNG","PY":"PRY","PE":"PER","PH":"PHL","PL":"POL","PT":"PRT","QA":"QAT",
+        "RO":"ROU","RU":"RUS","RW":"RWA","KN":"KNA","LC":"LCA","VC":"VCT","WS":"WSM",
+        "SM":"SMR","ST":"STP","SA":"SAU","SN":"SEN","RS":"SRB","SC":"SYC","SL":"SLE",
+        "SG":"SGP","SK":"SVK","SI":"SVN","SB":"SLB","SO":"SOM","ZA":"ZAF","SS":"SSD",
+        "ES":"ESP","LK":"LKA","SD":"SDN","SR":"SUR","SE":"SWE","CH":"CHE","SY":"SYR",
+        "TW":"TWN","TJ":"TJK","TZ":"TZA","TH":"THA","TL":"TLS","TG":"TGO","TO":"TON",
+        "TT":"TTO","TN":"TUN","TR":"TUR","TM":"TKM","TV":"TUV","UG":"UGA","UA":"UKR",
+        "AE":"ARE","GB":"GBR","US":"USA","UY":"URY","UZ":"UZB","VU":"VUT","VE":"VEN",
+        "VN":"VNM","YE":"YEM","ZM":"ZMB","ZW":"ZWE","XK":"XKX","XX":"XXX",
+    }
+
+    def to_iso3(code: str) -> str:
+        code = str(code).strip().upper()
+        if len(code) == 2:
+            return ISO2_TO_ISO3.get(code, code)   # keep original if not found
+        return code                                # assume already alpha-3
+
+    country_agg["ISO3"] = country_agg["País"].apply(to_iso3)
+
+    # ── Choose value column ──────────────────────────────────────────────────
+    metric_col_map = {
+        "Monto Total":           ("Monto",    "Monto Total (Q)",         "YlOrRd"),
+        "N° Transacciones":      ("Volumen",  "N° Transacciones",        "YlGn"),
+        "Monto Promedio / Tx":   ("Promedio", "Monto Promedio / Tx (Q)", "YlOrBr"),
+    }
+    val_col, val_label, color_scale = metric_col_map[map_metric]
+
+    # ── Choropleth ───────────────────────────────────────────────────────────
+    _vmin = country_agg[val_col].quantile(0.05)
+    _vmax = country_agg[val_col].quantile(0.95)
+
+    fig_map = px.choropleth(
+        country_agg,
+        locations="ISO3",
+        color=val_col,
+        hover_name="País",
+        hover_data={
+            "Monto":    ":,.0f",
+            "Volumen":  ":,",
+            "Promedio": ":,.0f",
+            "ISO3":     False,
+        },
+        color_continuous_scale=color_scale,
+        range_color=(_vmin, _vmax),
+        title=f"{val_label} por País — {period_label}",
+        labels={val_col: val_label},
+    )
+    fig_map.update_layout(
+        geo=dict(showframe=False, showcoastlines=True, projection_type="natural earth"),
+        coloraxis_colorbar=dict(title=val_label, thickness=14, len=0.6),
+        margin=dict(l=0, r=0, t=50, b=0),
+        height=520,
+    )
+    st.plotly_chart(fig_map, use_container_width=True)
+
+    # ── KPI strip ────────────────────────────────────────────────────────────
+    st.markdown("---")
+    k1, k2, k3 = st.columns(3)
+    k1.metric("Países distintos",       f"{country_agg['ISO3'].nunique():,}")
+    k2.metric("Monto total",            format_amount(country_agg["Monto"].sum()))
+    k3.metric("Total transacciones",    f"{int(country_agg['Volumen'].sum()):,}")
+
+    # ── Ranked bar chart ─────────────────────────────────────────────────────
+    st.markdown("#### Ranking de Países")
+    top_n_map = st.slider("Mostrar top N países:", 5, min(30, len(country_agg)), 10, key="top_n_map")
+    bar_data = (
+        country_agg.nlargest(top_n_map, val_col)
+        .sort_values(val_col, ascending=True)
+    )
+    fig_bar_map = px.bar(
+        bar_data,
+        x=val_col,
+        y="País",
+        orientation="h",
+        color=val_col,
+        color_continuous_scale=color_scale,
+        text=val_col,
+        labels={val_col: val_label, "País": ""},
+        title=f"Top {top_n_map} países por {val_label}",
+        height=max(350, top_n_map * 38),
+    )
+    fig_bar_map.update_traces(
+        texttemplate="%{x:,.0f}",
+        textposition="outside",
+    )
+    fig_bar_map.update_layout(coloraxis_showscale=False, xaxis_title=val_label)
+    st.plotly_chart(fig_bar_map, use_container_width=True)
+
+    # ── Detail table + download ──────────────────────────────────────────────
+    with st.expander("Ver tabla completa por país"):
+        display_table = (
+            country_agg[["País", "ISO3", "Monto", "Volumen", "Promedio"]]
+            .sort_values("Monto", ascending=False)
+            .rename(columns={
+                "Monto":    "Monto Total (Q)",
+                "Volumen":  "N° Transacciones",
+                "Promedio": "Monto Promedio / Tx (Q)",
+            })
+        )
+        st.dataframe(
+            display_table.style.format({
+                "Monto Total (Q)":          "{:,.2f}",
+                "N° Transacciones":         "{:,}",
+                "Monto Promedio / Tx (Q)":  "{:,.2f}",
+            }),
+            use_container_width=True,
+        )
+
+    buffer_map = io.BytesIO()
+    display_table.to_excel(buffer_map, index=False)
+    buffer_map.seek(0)
+    st.download_button(
+        "Descargar Excel (Países)",
+        buffer_map,
+        "distribucion_paises.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
