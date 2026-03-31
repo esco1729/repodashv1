@@ -698,7 +698,55 @@ with tab3:
     }
     val_col, val_label, color_scale = metric_col_map[map_metric]
 
-    # ── Choropleth ───────────────────────────────────────────────────────────
+    # ── High-risk country list ────────────────────────────────────────────────
+    FLAGGED_COUNTRIES = {
+        "Argelia":                              "DZA",
+        "Angola":                               "AGO",
+        "Bolivia":                              "BOL",
+        "Bulgaria":                             "BGR",
+        "Camerún":                              "CMR",
+        "Costa de Marfil":                      "CIV",
+        "República Democrática del Congo":      "COD",
+        "Haití":                                "HTI",
+        "Kenia":                                "KEN",
+        "Kuwait":                               "KWT",
+        "República Democrática Popular Lao":    "LAO",
+        "Líbano":                               "LBN",
+        "Mónaco":                               "MCO",
+        "Namibia":                              "NAM",
+        "Nepal":                                "NPL",
+        "Papúa Nueva Guinea":                   "PNG",
+        "Sudán del Sur":                        "SSD",
+        "Siria":                                "SYR",
+        "Venezuela":                            "VEN",
+        "Vietnam":                              "VNM",
+        "Islas Vírgenes (Reino Unido)":         "VGB",
+        "Yemen":                                "YEM",
+    }
+    FLAGGED_ISO3_SET = set(FLAGGED_COUNTRIES.values())
+
+    # Mark flagged rows
+    country_agg["Flagged"] = country_agg["ISO3"].isin(FLAGGED_ISO3_SET)
+
+    hit_rows = country_agg[country_agg["Flagged"]].copy()
+    hit_names = {v: k for k, v in FLAGGED_COUNTRIES.items()}   # ISO3 → name
+
+    # ── Alert ─────────────────────────────────────────────────────────────────
+    if not hit_rows.empty:
+        hit_list = " · ".join(
+            f"**{hit_names.get(iso, iso)}** ({row[val_col]:,.0f})"
+            for iso, row in hit_rows.set_index("ISO3").iterrows()
+            if iso in hit_names
+        )
+        st.error(
+            f"⚠️ **{len(hit_rows)} país(es) de alto riesgo** con actividad en el período seleccionado:\n\n"
+            + hit_list,
+            icon="🚨",
+        )
+    else:
+        st.success("✅ Ningún país de alto riesgo registró actividad en el período seleccionado.")
+
+    # ── Choropleth ────────────────────────────────────────────────────────────
     _vmin = country_agg[val_col].quantile(0.05)
     _vmax = country_agg[val_col].quantile(0.95)
 
@@ -712,15 +760,68 @@ with tab3:
             "Volumen":  ":,",
             "Promedio": ":,.0f",
             "ISO3":     False,
+            "Flagged":  False,
         },
         color_continuous_scale=color_scale,
         range_color=(_vmin, _vmax),
         title=f"{val_label} por País — {period_label}",
         labels={val_col: val_label},
     )
+
+    # ── Flagged overlay (scatter markers) ─────────────────────────────────────
+    # Approximate centroids for the flagged ISO3 codes
+    CENTROIDS = {
+        "DZA": (  2.6,  28.0), "AGO": ( 17.9, -11.2), "BOL": (-64.9, -16.3),
+        "BGR": ( 25.5,  42.7), "CMR": ( 12.4,   5.7), "CIV": ( -5.5,   7.5),
+        "COD": ( 23.7,  -2.9), "HTI": (-72.3,  18.9), "KEN": ( 37.9,  -0.0),
+        "KWT": ( 47.5,  29.3), "LAO": (102.5,  18.0), "LBN": ( 35.9,  33.9),
+        "MCO": (  7.4,  43.7), "NAM": ( 18.5, -22.0), "NPL": ( 84.1,  28.4),
+        "PNG": (143.9,  -6.3), "SSD": ( 31.3,   6.9), "SYR": ( 38.9,  35.0),
+        "VEN": (-66.6,   6.4), "VNM": (108.3,  14.1), "VGB": (-64.6,  18.4),
+        "YEM": ( 47.6,  15.6),
+    }
+
+    if not hit_rows.empty:
+        flag_lons, flag_lats, flag_texts = [], [], []
+        for _, row in hit_rows.iterrows():
+            iso = row["ISO3"]
+            if iso in CENTROIDS:
+                lon, lat = CENTROIDS[iso]
+                flag_lons.append(lon)
+                flag_lats.append(lat)
+                flag_texts.append(
+                    f"<b>⚠ {hit_names.get(iso, iso)}</b><br>"
+                    f"{val_label}: {row[val_col]:,.0f}<br>"
+                    f"Transacciones: {int(row['Volumen']):,}"
+                )
+
+        fig_map.add_trace(
+            go.Scattergeo(
+                lon=flag_lons,
+                lat=flag_lats,
+                mode="markers",
+                marker=dict(
+                    symbol="x",
+                    size=14,
+                    color="#FF2400",
+                    line=dict(width=2, color="#8B0000"),
+                ),
+                hovertext=flag_texts,
+                hoverinfo="text",
+                name="⚠ Alto riesgo",
+                showlegend=True,
+            )
+        )
+
     fig_map.update_layout(
         geo=dict(showframe=False, showcoastlines=True, projection_type="natural earth"),
         coloraxis_colorbar=dict(title=val_label, thickness=14, len=0.6),
+        legend=dict(
+            orientation="h", yanchor="bottom", y=-0.08,
+            xanchor="center", x=0.5,
+            bgcolor="rgba(255,255,255,0.8)",
+            bordercolor="#ccc", borderwidth=1,
+        ),
         margin=dict(l=0, r=0, t=50, b=0),
         height=520,
     )
